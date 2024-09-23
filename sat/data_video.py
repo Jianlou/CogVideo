@@ -357,7 +357,7 @@ class VideoDataset(MetaDistributedWebDataset):
 
 
 class SFTDataset(Dataset):
-    def __init__(self, data_dir, video_size, fps, max_num_frames, skip_frms_num=3):
+    def __init__(self, data_dir, video_size, fps, max_num_frames, skip_frms_num=3, root_dir=None):
         """
         skip_frms_num: ignore the first and the last xx frames, avoiding transitions.
         """
@@ -367,22 +367,44 @@ class SFTDataset(Dataset):
         self.fps = fps
         self.max_num_frames = max_num_frames
         self.skip_frms_num = skip_frms_num
+        if root_dir is None:
+            self.root_dir = "/mnt/afs_1/sijianlou/code/CogVideo/datas/Disney"
+        else:
+            self.root_dir = root_dir
 
         self.video_paths = []
         self.captions = []
 
-        for root, dirnames, filenames in os.walk(data_dir):
-            for filename in filenames:
-                if filename.endswith(".mp4"):
-                    video_path = os.path.join(root, filename)
-                    self.video_paths.append(video_path)
+        if 1:
+            assert os.path.exists(os.path.join(data_dir, "videos.txt"))
+            assert os.path.exists(os.path.join(data_dir, "prompt.txt"))
+            video_list_sum = prompt_list_sum = 0
+            with open(os.path.join(data_dir, "videos.txt"), "r", encoding="utf-8") as video_list:
+                video_list_sum = sum(1 for _ in video_list)
+            with open(os.path.join(data_dir, "prompt.txt"), "r", encoding="utf-8") as prompt_list:
+                prompt_list_sum = sum(1 for _ in prompt_list)
+            assert video_list_sum == prompt_list_sum
+            with open(os.path.join(data_dir, "videos.txt"), "r", encoding="utf-8") as video_list, open(os.path.join(data_dir, "prompt.txt"), "r", encoding="utf-8") as prompt_list:
+                for line1, line2 in zip(video_list, prompt_list):
+                    # 处理每行
+                    self.video_paths.append(os.path.join(self.root_dir, line1.strip()))
+                    self.captions.append(line2.strip())
+            print(len(self.video_paths))
+            print("All videos All videos All videos")
+            print(len(self.captions))
+        else:
+            for root, dirnames, filenames in os.walk(data_dir):
+                for filename in filenames:
+                    if filename.endswith(".mp4"):
+                        video_path = os.path.join(root, filename)
+                        self.video_paths.append(video_path)
 
-                    caption_path = video_path.replace(".mp4", ".txt").replace("videos", "labels")
-                    if os.path.exists(caption_path):
-                        caption = open(caption_path, "r").read().splitlines()[0]
-                    else:
-                        caption = ""
-                    self.captions.append(caption)
+                        caption_path = video_path.replace(".mp4", ".txt").replace("videos", "labels")
+                        if os.path.exists(caption_path):
+                            caption = open(caption_path, "r").read().splitlines()[0]
+                        else:
+                            caption = ""
+                        self.captions.append(caption)
 
     def __getitem__(self, index):
         
@@ -408,7 +430,7 @@ class SFTDataset(Dataset):
                 num_frames = self.max_num_frames
                 start = int(self.skip_frms_num)
                 end = int(ori_vlen - self.skip_frms_num)
-                indices = np.arange(start, end, max((end - start) // num_frames), 1).astype(int)
+                indices = np.arange(start, end, max((end - start) // num_frames, 1)).astype(int)
                 temp_frms = vr.get_batch(np.arange(start, end))
                 assert temp_frms is not None
                 tensor_frms = (

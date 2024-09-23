@@ -118,6 +118,7 @@ def sampling_main(args, model_cls):
     else:
         model = model_cls
 
+    print(args)
     load_checkpoint(model, args)
     model.eval()
 
@@ -225,6 +226,7 @@ if __name__ == "__main__":
     py_parser = argparse.ArgumentParser(add_help=False)
     known, args_list = py_parser.parse_known_args()
 
+    print("step into inference............")
     args = get_args(args_list)
     args = argparse.Namespace(**vars(args), **vars(known))
     del args.deepspeed_config

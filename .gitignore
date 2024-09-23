@@ -8,3 +8,7 @@ logs/
 .idea
 output*
 test*
+models/
+*.log
+datas/
+ckpt*/
