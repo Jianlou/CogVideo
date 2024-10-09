@@ -102,6 +102,7 @@ class ZeroSNRDDPMDiscretization(Discretization):
             timesteps = generate_roughly_equally_spaced_steps(n, self.num_timesteps)
             alphas_cumprod = self.alphas_cumprod[timesteps]
         elif n == self.num_timesteps:
+            timesteps = generate_roughly_equally_spaced_steps(n, self.num_timesteps)
             alphas_cumprod = self.alphas_cumprod
         else:
             raise ValueError

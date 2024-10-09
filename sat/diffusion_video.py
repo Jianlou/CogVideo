@@ -125,7 +125,7 @@ class SATVideoDiffusionEngine(nn.Module):
         self.first_stage_model = model
 
     def forward(self, x, batch):
-        loss = self.loss_fn(self.model, self.denoiser, self.conditioner, x, batch)
+        loss = self.loss_fn(self.model, self.denoiser, self.sampler, self.conditioner, self.first_stage_model, x, batch, self.scale_factor)
         loss_mean = loss.mean()
         loss_dict = {"loss": loss_mean}
         return loss_mean, loss_dict
@@ -140,10 +140,11 @@ class SATVideoDiffusionEngine(nn.Module):
 
         x = x.permute(0, 2, 1, 3, 4).contiguous()
         x = self.encode_first_stage(x, batch)
-        x = x.permute(0, 2, 1, 3, 4).contiguous()
+        x = x.permute(0, 2, 1, 3, 4).contiguous() # b * T(视频压缩4倍) * C(16通道) * H * W
 
         gc.collect()
         torch.cuda.empty_cache()
+
         loss, loss_dict = self(x, batch)
         return loss, loss_dict
 
@@ -181,10 +182,12 @@ class SATVideoDiffusionEngine(nn.Module):
         n_samples = default(self.en_and_decode_n_samples_a_time, x.shape[0])
         n_rounds = math.ceil(x.shape[0] / n_samples)
         all_out = []
+        self.first_stage_model.to(self.device)
         with torch.autocast("cuda", enabled=not self.disable_first_stage_autocast):
             for n in range(n_rounds):
                 out = self.first_stage_model.encode(x[n * n_samples : (n + 1) * n_samples])
                 all_out.append(out)
+        self.first_stage_model.to("cpu")
         z = torch.cat(all_out, dim=0)
         z = self.scale_factor * z
         return z
@@ -313,3 +316,59 @@ class SATVideoDiffusionEngine(nn.Module):
             samples = samples.permute(0, 2, 1, 3, 4).contiguous()
             log["samples"] = samples
         return log
+
+    @torch.no_grad()
+    def video_generate(
+        self,
+        z,
+        batch: Dict,
+        ucg_keys: List[str] = None,
+        partial = 1.0,
+        **kwargs):
+        conditioner_input_keys = [e.input_key for e in self.conditioner.embedders]
+        print(conditioner_input_keys)
+        if ucg_keys:
+            assert all(map(lambda x: x in conditioner_input_keys, ucg_keys)), (
+                "Each defined ucg key for sampling must be in the provided conditioner input keys,"
+                f"but we have {ucg_keys} vs. {conditioner_input_keys}"
+            )
+        else:
+            ucg_keys = conditioner_input_keys
+        print(ucg_keys)
+        c, uc = self.conditioner.get_unconditional_conditioning(
+            batch,
+            force_uc_zero_embeddings=ucg_keys if len(self.conditioner.embedders) > 0 else [],
+        )
+        for k in c:
+            if isinstance(c[k], torch.Tensor):
+                c[k], uc[k] = map(lambda y: y[k][:N].to(self.device), (c, uc))
+        assert False
+        
+        # samples = self.sample(c, shape=z.shape[1:], uc=uc, batch_size=N, **sampling_kwargs)  # b t c h w
+
+        randn = torch.randn(z.shape).to(torch.float32).to(self.device)
+        if hasattr(self, "seeded_noise"):
+            randn = self.seeded_noise(randn)
+
+        # broadcast noise
+        mp_size = mpu.get_model_parallel_world_size()
+        if mp_size > 1:
+            global_rank = torch.distributed.get_rank() // mp_size
+            src = global_rank * mp_size
+            torch.distributed.broadcast(randn, src=src, group=mpu.get_model_parallel_group())
+
+        scale = None
+        scale_emb = None
+
+        denoiser = lambda input, sigma, c, **addtional_model_inputs: self.denoiser(
+            self.model, input, sigma, c, concat_images=concat_images, **addtional_model_inputs
+        )
+
+        samples = self.sampler(denoiser, randn, c, uc=uc, scale=scale, scale_emb=scale_emb)
+        samples = samples.to(self.dtype)
+
+        samples = samples.permute(0, 2, 1, 3, 4).contiguous()
+        samples = self.decode_first_stage(samples).to(torch.float32)
+        samples = samples.permute(0, 2, 1, 3, 4).contiguous()
+
+        return samples

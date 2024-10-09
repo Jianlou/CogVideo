@@ -30,7 +30,7 @@ class EpsScaling:
         c_noise = sigma.clone()
         return c_skip, c_out, c_in, c_noise
 
-
+# v-prediction
 class VScaling:
     def __call__(self, sigma: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         c_skip = 1.0 / (sigma**2 + 1.0)
@@ -39,7 +39,7 @@ class VScaling:
         c_noise = sigma.clone()
         return c_skip, c_out, c_in, c_noise
 
-
+# v-prediction
 class VScalingWithEDMcNoise(DenoiserScaling):
     def __call__(self, sigma: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         c_skip = 1.0 / (sigma**2 + 1.0)
@@ -48,7 +48,7 @@ class VScalingWithEDMcNoise(DenoiserScaling):
         c_noise = 0.25 * sigma.log()
         return c_skip, c_out, c_in, c_noise
 
-
+# v-prediction
 class VideoScaling:  # similar to VScaling
     def __call__(
         self, alphas_cumprod_sqrt: torch.Tensor, **additional_model_inputs

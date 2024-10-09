@@ -44,7 +44,7 @@ class StandardDiffusionLoss(nn.Module):
 
         self.batch2model_keys = set(batch2model_keys)
 
-    def __call__(self, network, denoiser, conditioner, input, batch):
+    def __call__(self, network, denoiser, sampler, conditioner, autoencoder, input, batch, scale_factor):
         cond = conditioner(batch)
         additional_model_inputs = {key: batch[key] for key in self.batch2model_keys.intersection(batch)}
 
@@ -78,7 +78,7 @@ class VideoDiffusionLoss(StandardDiffusionLoss):
         self.min_snr_value = min_snr_value
         super().__init__(**kwargs)
 
-    def __call__(self, network, denoiser, conditioner, input, batch):
+    def __call__(self, network, denoiser, sampler, conditioner, autoencoder, input, batch, scale_factor):
         cond = conditioner(batch)
         additional_model_inputs = {key: batch[key] for key in self.batch2model_keys.intersection(batch)}
 
@@ -130,3 +130,5 @@ def get_3d_position_ids(frame_len, h, w):
     k = torch.arange(w).view(1, 1, w).expand(frame_len, h, w)
     position_ids = torch.stack([i, j, k], dim=-1).reshape(-1, 3)
     return position_ids
+
+

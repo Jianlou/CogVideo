@@ -482,13 +482,22 @@ class VideoDDIMSampler(BaseDiffusionSampler):
         self.fixed_frames = fixed_frames
         self.sdedit = sdedit
 
-    def prepare_sampling_loop(self, x, cond, uc=None, num_steps=None):
-        alpha_cumprod_sqrt, timesteps = self.discretization(
+    def prepare_discretization(self, num_steps=None):
+        return self.discretization(
             self.num_steps if num_steps is None else num_steps,
             device=self.device,
             return_idx=True,
             do_append_zero=False,
         )
+
+    def prepare_sampling_loop(self, x, cond, uc=None, num_steps=None):
+        alpha_cumprod_sqrt, timesteps = self.prepare_discretization(num_steps)
+        # alpha_cumprod_sqrt, timesteps = self.discretization(
+        #     self.num_steps if num_steps is None else num_steps,
+        #     device=self.device,
+        #     return_idx=True,
+        #     do_append_zero=False,
+        # )
         alpha_cumprod_sqrt = torch.cat([alpha_cumprod_sqrt, alpha_cumprod_sqrt.new_ones([1])])
         timesteps = torch.cat([torch.tensor(list(timesteps)).new_zeros([1]) - 1, torch.tensor(list(timesteps))])
 
@@ -637,9 +646,13 @@ class VPSDEDPMPP2MSampler(VideoDDIMSampler):
         return x, denoised
 
     def __call__(self, denoiser, x, cond, uc=None, num_steps=None, scale=None, scale_emb=None):
+        print("Before prepare")
+        print(x.dtype)
         x, s_in, alpha_cumprod_sqrt, num_sigmas, cond, uc, timesteps = self.prepare_sampling_loop(
             x, cond, uc, num_steps
         )
+        print("After prepare")
+        print(x.dtype)
 
         if self.fixed_frames > 0:
             prefix_frames = x[:, : self.fixed_frames]
@@ -668,6 +681,7 @@ class VPSDEDPMPP2MSampler(VideoDDIMSampler):
                 scale=scale,
                 scale_emb=scale_emb,
             )
+            print([x.dtype, old_denoised.dtype])
 
         if self.fixed_frames > 0:
             x = torch.cat([prefix_frames, x[:, self.fixed_frames :]], dim=1)

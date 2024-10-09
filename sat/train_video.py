@@ -187,9 +187,9 @@ def forward_step(data_iterator, model, args, timers, data_class=None):
                 OmegaConf.save(config=config, f=os.path.join(args.save, "training_config.yaml"))
     else:
         batch = {"mp4": None, "fps": None, "num_frames": None, "txt": None}
+    # "mp4": b * t * 3 * h * w 
 
     batch["global_step"] = args.iteration
-
     broad_cast_batch(batch)
 
     loss, loss_dict = model.shared_step(batch)
@@ -205,6 +205,7 @@ if __name__ == "__main__":
 
     py_parser = argparse.ArgumentParser(add_help=False)
     known, args_list = py_parser.parse_known_args()
+
     args = get_args(args_list)
     args = argparse.Namespace(**vars(args), **vars(known))
 

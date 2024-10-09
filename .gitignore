@@ -12,3 +12,4 @@ models/
 *.log
 datas/
 ckpt*/
+*.mp4

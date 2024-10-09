@@ -14,3 +14,7 @@ scipy==1.14.0
 decord==0.6.0
 wandb==0.17.5
 deepspeed==0.14.4
+ftfy
+opencv-python
+scikit-image
+piq
