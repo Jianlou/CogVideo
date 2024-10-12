@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import ListConfig
 import math
+import torch.utils.checkpoint as checkpoint
 
 from sgm.modules.diffusionmodules.loss import VideoDiffusionLoss
 from .reward import DiffRewardModel
@@ -57,9 +58,9 @@ class VidDiffwithRMLoss(VideoDiffusionLoss):
 
         # process input
         noise = torch.randn_like(input)
-        print(noise.device)
-        print(input.dtype)
-        print(noise.dtype)
+        # print(noise.device)
+        # print(input.dtype)
+        # print(noise.dtype)
         mp_size = mpu.get_model_parallel_world_size()
         if mp_size > 1:
             global_rank = torch.distributed.get_rank() // mp_size
@@ -85,12 +86,12 @@ class VidDiffwithRMLoss(VideoDiffusionLoss):
         network.to(device)
         scale = None
         scale_emb = None
-        denoiser_fn = lambda input, sigma, c, **addtional_model_inputs: denoiser(
-            network, input, sigma, c, concat_images=None, **addtional_model_inputs
+        denoiser_fn = lambda input_x, sigma, c, **addtional_model_inputs: denoiser(
+            network, input_x, sigma, c, concat_images=None, **addtional_model_inputs
         )
-        with torch.no_grad():#should moidify when training
-            samples_z = sampler(denoiser_fn, noise, cond, uc=ucond, scale=scale, scale_emb=scale_emb).to(input.dtype)
-        network.to("cpu")
+        # with torch.no_grad():#should moidify when training
+        samples_z = sampler(denoiser_fn, input, noise, cond, uc=ucond, scale=scale, scale_emb=scale_emb, edit_ratio=0.5).to(input.dtype)
+        # network.to("cpu")
         torch.cuda.empty_cache()
         # print(samples_z.shape)
         # assert False
@@ -103,10 +104,11 @@ class VidDiffwithRMLoss(VideoDiffusionLoss):
                 print(f"Layer: {name}, requires_grad: {param.requires_grad}")
         T = samples_z.shape[1]
         samples_z = samples_z.permute(0, 2, 1, 3, 4).contiguous()
-        autoencoder.to(device)
+        autoencoder.decoder.to(device)
         latent = 1.0 / scale_factor * samples_z
         recons = []
-        loop_num = (T - 1) // 2
+        # loop_num = (T - 1) // 2
+        loop_num = (T - 1) // 4
         for i in range(loop_num):
             if i == 0:
                 start_frame, end_frame = 0, 3
@@ -116,22 +118,32 @@ class VidDiffwithRMLoss(VideoDiffusionLoss):
                 clear_fake_cp_cache = True
             else:
                 clear_fake_cp_cache = False
-            recon = autoencoder.decode(
-                latent[:, :, start_frame:end_frame].contiguous(), clear_fake_cp_cache=clear_fake_cp_cache
-            )
+            # print("start_frame " + str(start_frame) + " end_frame " + str(end_frame))
+            # print(latent.dtype)
+            # print(f"Allocated memory: {torch.cuda.memory_allocated() / (1024**2)} MB")
+            recon = checkpoint.checkpoint(autoencoder.decode, 
+                latent[:, :, start_frame:end_frame].contiguous(),
+                clear_fake_cp_cache=clear_fake_cp_cache,
+                use_reentrant=False)
+            # recon = autoencoder.decode(
+            #     latent[:, :, start_frame:end_frame].contiguous(), clear_fake_cp_cache=clear_fake_cp_cache
+            # )
             recons.append(recon)
-        autoencoder.to("cpu")
+        # autoencoder.to("cpu")
         samples_x = torch.cat(recons, dim=2)
         # samples_x = samples_x.permute(0, 2, 1, 3, 4).contiguous()
         samples_x = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0)
+
         # samples_x = torch.cat(recons, dim=2).to(torch.float32)
         # samples_x = samples_x.permute(0, 2, 1, 3, 4).contiguous()
         # samples_x = torch.clamp((samples_x + 1.0) / 2.0, min=0.0, max=1.0).cpu()
         # print(samples_x.dtype)
         # print(samples_x.shape)
         # if mpu.get_model_parallel_rank() == 0:
-        #     save_video_as_grid_and_mp4(samples_x, "reward_model_test.mp4", fps=8)
+        #     save_video_as_grid_and_mp4(samples_x, "reward_model_test_0ed.mp4", fps=8)
+
         print(f"Pre reward score Allocated memory: {torch.cuda.memory_allocated() / (1024**2)} MB")
+        # assert False
 
         # reward score
         loss = self.rewarder.reward_scorer(batch["txt"],samples_x)
@@ -141,17 +153,17 @@ class VidDiffwithRMLoss(VideoDiffusionLoss):
 
         # print(alphas_cumprod_sqrt)
         # print(idx)
-        print("denoiser")
-        print(vars(denoiser))
-        print("sampler")
-        print(vars(sampler))
-        sigmas, timesteps = sampler.prepare_discretization()
-        print("timesteps")
-        print(sigmas)
-        print(timesteps)
-        print("sigma_sampler")
-        print(vars(self.sigma_sampler))
-        print("Loss haven't implemented!!!")
-        assert False
+        # print("denoiser")
+        # print(vars(denoiser))
+        # print("sampler")
+        # print(vars(sampler))
+        # sigmas, timesteps = sampler.prepare_discretization()
+        # print("timesteps")
+        # print(sigmas)
+        # print(timesteps)
+        # print("sigma_sampler")
+        # print(vars(self.sigma_sampler))
+        # print("Loss haven't implemented!!!")
+        # assert False
 
-        pass
+        return loss

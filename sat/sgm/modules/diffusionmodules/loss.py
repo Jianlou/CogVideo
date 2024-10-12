@@ -106,8 +106,10 @@ class VideoDiffusionLoss(StandardDiffusionLoss):
         noised_input = input.float() * append_dims(alphas_cumprod_sqrt, input.ndim) + noise * append_dims(
             (1 - alphas_cumprod_sqrt**2) ** 0.5, input.ndim
         )
-
+        print(noised_input.dtype)
         model_output = denoiser(network, noised_input, alphas_cumprod_sqrt, cond, **additional_model_inputs)
+        print(model_output.dtype)
+        assert False
         w = append_dims(1 / (1 - alphas_cumprod_sqrt**2), input.ndim)  # v-pred
 
         if self.min_snr_value is not None:

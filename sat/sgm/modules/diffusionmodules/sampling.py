@@ -7,6 +7,8 @@ from typing import Dict, Union
 import torch
 from omegaconf import ListConfig, OmegaConf
 from tqdm import tqdm
+import math
+import torch.utils.checkpoint as checkpoint
 
 from ...modules.diffusionmodules.sampling_utils import (
     get_ancestral_step,
@@ -646,13 +648,21 @@ class VPSDEDPMPP2MSampler(VideoDDIMSampler):
         return x, denoised
 
     def __call__(self, denoiser, x, cond, uc=None, num_steps=None, scale=None, scale_emb=None):
-        print("Before prepare")
-        print(x.dtype)
+        # print("Before prepare")
+        # print(x.dtype)
         x, s_in, alpha_cumprod_sqrt, num_sigmas, cond, uc, timesteps = self.prepare_sampling_loop(
             x, cond, uc, num_steps
         )
-        print("After prepare")
-        print(x.dtype)
+        # print(x)
+        # print(s_in)
+        # print(alpha_cumprod_sqrt)
+        # print(num_sigmas)
+        # print(cond)
+        # print(uc)
+        # print(timesteps)
+        # assert False
+        # print("After prepare")
+        # print(x.dtype)
 
         if self.fixed_frames > 0:
             prefix_frames = x[:, : self.fixed_frames]
@@ -681,7 +691,7 @@ class VPSDEDPMPP2MSampler(VideoDDIMSampler):
                 scale=scale,
                 scale_emb=scale_emb,
             )
-            print([x.dtype, old_denoised.dtype])
+            # print([x.dtype, old_denoised.dtype])
 
         if self.fixed_frames > 0:
             x = torch.cat([prefix_frames, x[:, self.fixed_frames :]], dim=1)
@@ -773,5 +783,173 @@ class VPODEDPMPP2MSampler(VideoDDIMSampler):
                 idx=self.num_steps - i,
                 timestep=timesteps[-(i + 1)],
             )
+
+        return x
+
+class VPSDEDPMPP2MSamplerEdit(VideoDDIMSampler):
+    def get_variables(self, alpha_cumprod_sqrt, next_alpha_cumprod_sqrt, previous_alpha_cumprod_sqrt=None):
+        alpha_cumprod = alpha_cumprod_sqrt**2
+        lamb = ((alpha_cumprod / (1 - alpha_cumprod)) ** 0.5).log()
+        next_alpha_cumprod = next_alpha_cumprod_sqrt**2
+        lamb_next = ((next_alpha_cumprod / (1 - next_alpha_cumprod)) ** 0.5).log()
+        h = lamb_next - lamb
+
+        if previous_alpha_cumprod_sqrt is not None:
+            previous_alpha_cumprod = previous_alpha_cumprod_sqrt**2
+            lamb_previous = ((previous_alpha_cumprod / (1 - previous_alpha_cumprod)) ** 0.5).log()
+            h_last = lamb - lamb_previous
+            r = h_last / h
+            return h, r, lamb, lamb_next
+        else:
+            return h, None, lamb, lamb_next
+
+    def get_mult(self, h, r, alpha_cumprod_sqrt, next_alpha_cumprod_sqrt, previous_alpha_cumprod_sqrt):
+        mult1 = ((1 - next_alpha_cumprod_sqrt**2) / (1 - alpha_cumprod_sqrt**2)) ** 0.5 * (-h).exp()
+        mult2 = (-2 * h).expm1() * next_alpha_cumprod_sqrt
+
+        if previous_alpha_cumprod_sqrt is not None:
+            mult3 = 1 + 1 / (2 * r)
+            mult4 = 1 / (2 * r)
+            return mult1, mult2, mult3, mult4
+        else:
+            return mult1, mult2
+
+    def sampler_step(
+        self,
+        old_denoised,
+        previous_alpha_cumprod_sqrt,
+        alpha_cumprod_sqrt,
+        next_alpha_cumprod_sqrt,
+        denoiser,
+        x,
+        cond,
+        uc=None,
+        idx=None,
+        timestep=None,
+        scale=None,
+        scale_emb=None,
+    ):
+        denoised = self.denoise(
+            x, denoiser, alpha_cumprod_sqrt, cond, uc, timestep, idx, scale=scale, scale_emb=scale_emb
+        ).to(torch.float32)
+        if idx == 1:
+            return denoised, denoised
+
+        h, r, lamb, lamb_next = self.get_variables(
+            alpha_cumprod_sqrt, next_alpha_cumprod_sqrt, previous_alpha_cumprod_sqrt
+        )
+        mult = [
+            append_dims(mult, x.ndim)
+            for mult in self.get_mult(h, r, alpha_cumprod_sqrt, next_alpha_cumprod_sqrt, previous_alpha_cumprod_sqrt)
+        ]
+        mult_noise = append_dims((1 - next_alpha_cumprod_sqrt**2) ** 0.5 * (1 - (-2 * h).exp()) ** 0.5, x.ndim)
+
+        x_standard = mult[0] * x - mult[1] * denoised + mult_noise * torch.randn_like(x)
+        if old_denoised is None or torch.sum(next_alpha_cumprod_sqrt) < 1e-14:
+            # Save a network evaluation if all noise levels are 0 or on the first step
+            return x_standard, denoised
+        else:
+            denoised_d = mult[2] * denoised - mult[3] * old_denoised
+            x_advanced = mult[0] * x - mult[1] * denoised_d + mult_noise * torch.randn_like(x)
+
+            x = x_advanced
+
+        return x, denoised
+
+    def __call__(self, denoiser, image, x, cond, uc=None, num_steps=None, scale=None, scale_emb=None, edit_ratio=0.0):
+        # print("Before prepare")
+        # print(x.dtype)
+        randn_unit = x.clone()
+        x, s_in, alpha_cumprod_sqrt, num_sigmas, cond, uc, timesteps = self.prepare_sampling_loop(
+            x, cond, uc, num_steps
+        )
+        start_i = math.ceil(edit_ratio * self.num_steps)
+        # x = image + randn_unit * append_dims(s_in * alpha_cumprod_sqrt[start_i], len(randn_unit.shape))
+        x = image * append_dims(alpha_cumprod_sqrt[start_i], len(image.shape)) + randn_unit * append_dims(
+            (1 - alpha_cumprod_sqrt[start_i]**2) ** 0.5, len(image.shape))
+        # print(x.shape)
+        # print(image.shape)
+        # print(randn_unit.shape)
+        # print(start_i)
+        # print(alpha_cumprod_sqrt)
+        # print(alpha_cumprod_sqrt[start_i])
+        # print(num_sigmas)
+        # print(cond)
+        # print(uc)
+        # print(timesteps)
+        # print(self.get_sigma_gen(num_sigmas))
+        # assert False
+        # print("After prepare")
+        print(x.dtype)
+        # assert False
+
+        if self.fixed_frames > 0:
+            prefix_frames = x[:, : self.fixed_frames]
+        old_denoised = None
+        for i in self.get_sigma_gen(num_sigmas):
+            if i / self.num_steps < edit_ratio:
+                continue
+            if self.fixed_frames > 0:
+                if self.sdedit:
+                    rd = torch.randn_like(prefix_frames)
+                    noised_prefix_frames = alpha_cumprod_sqrt[i] * prefix_frames + rd * append_dims(
+                        s_in * (1 - alpha_cumprod_sqrt[i] ** 2) ** 0.5, len(prefix_frames.shape)
+                    )
+                    x = torch.cat([noised_prefix_frames, x[:, self.fixed_frames :]], dim=1)
+                else:
+                    x = torch.cat([prefix_frames, x[:, self.fixed_frames :]], dim=1)
+            if self.num_steps - i == 1:
+                x, old_denoised = checkpoint.checkpoint(self.sampler_step, 
+                    old_denoised,
+                    None if i == 0 else s_in * alpha_cumprod_sqrt[i - 1],
+                    s_in * alpha_cumprod_sqrt[i],
+                    s_in * alpha_cumprod_sqrt[i + 1],
+                    denoiser,
+                    x,
+                    cond,
+                    uc=uc,
+                    idx=self.num_steps - i,
+                    timestep=timesteps[-(i + 1)],
+                    scale=scale,
+                    scale_emb=scale_emb,
+                    use_reentrant=False)
+                # with torch.no_grad():
+                # x, old_denoised = self.sampler_step(
+                #     old_denoised,
+                #     None if i == 0 else s_in * alpha_cumprod_sqrt[i - 1],
+                #     s_in * alpha_cumprod_sqrt[i],
+                #     s_in * alpha_cumprod_sqrt[i + 1],
+                #     denoiser,
+                #     x,
+                #     cond,
+                #     uc=uc,
+                #     idx=self.num_steps - i,
+                #     timestep=timesteps[-(i + 1)],
+                #     scale=scale,
+                #     scale_emb=scale_emb,
+                # )
+                print(x.dtype)
+                print(old_denoised.dtype)
+                # assert False
+            else:
+                with torch.no_grad():
+                    x, old_denoised = self.sampler_step(
+                        old_denoised,
+                        None if i == 0 else s_in * alpha_cumprod_sqrt[i - 1],
+                        s_in * alpha_cumprod_sqrt[i],
+                        s_in * alpha_cumprod_sqrt[i + 1],
+                        denoiser,
+                        x,
+                        cond,
+                        uc=uc,
+                        idx=self.num_steps - i,
+                        timestep=timesteps[-(i + 1)],
+                        scale=scale,
+                        scale_emb=scale_emb,
+                    )
+            # print([x.dtype, old_denoised.dtype])
+
+        if self.fixed_frames > 0:
+            x = torch.cat([prefix_frames, x[:, self.fixed_frames :]], dim=1)
 
         return x

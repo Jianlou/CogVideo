@@ -2,7 +2,9 @@
 HOME_DIR=${0%/*}
 cd ${HOME_DIR}
 HOME_DIR=$(pwd)
-EXP=${1:-test-module}
+EXP=${1:-cogvx-train-single}
+MODEL_CONFIG=${2:-cogvideox_2b_lora}
+RUN_CONFIG=${3:-sft_2b}
 DATETIME=$(date '+%Y-%m-%d-%H:%M:%S')
 environs="WORLD_SIZE=1 RANK=0 LOCAL_RANK=0 LOCAL_WORLD_SIZE=1"
 
@@ -23,6 +25,6 @@ srun --partition-id share-a \
     --priority highest \
     --container-image registry.cn-sh-01.sensecore.cn/devsft-ccr/ubuntu22.04_cuda12.4_cogvx:v1.0.6 \
     --container-mounts 4ba8dc8e-52e5-11ee-82fd-de3a99f44f33:/mnt/afs_1 \
-    bash -c "cd "${HOME_DIR}"; source /root/miniconda3/bin/activate cogvx_sat; $environs python reward/reward.py; sleep 1d"
+    bash -c "cd "${HOME_DIR}"; source /root/miniconda3/bin/activate cogvx_sat; $environs python train_video.py --base configs/${MODEL_CONFIG}.yaml configs/${RUN_CONFIG}.yaml --seed $RANDOM; sleep 1d"
 
 echo "DONE on `hostname`"

@@ -964,9 +964,13 @@ class ContextParallelDecoder3D(nn.Module):
         h = self.mid.block_1(h, temb, zq, clear_fake_cp_cache=clear_fake_cp_cache)
         h = self.mid.block_2(h, temb, zq, clear_fake_cp_cache=clear_fake_cp_cache)
 
+        # print(f"Allocated memory in decoder: {torch.cuda.memory_allocated() / (1024**2)} MB")
+
         # upsampling
         for i_level in reversed(range(self.num_resolutions)):
             for i_block in range(self.num_res_blocks + 1):
+                # print(f"Allocated memory in decoder: {torch.cuda.memory_allocated() / (1024**2)} MB")
+                # print(h.dtype)
                 h = self.up[i_level].block[i_block](h, temb, zq, clear_fake_cp_cache=clear_fake_cp_cache)
                 if len(self.up[i_level].attn) > 0:
                     h = self.up[i_level].attn[i_block](h, zq)

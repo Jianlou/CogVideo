@@ -29,6 +29,8 @@ model:
       time_compressed_rate: 4
       latent_width: 90
       latent_height: 60
+      # latent_width: 60
+      # latent_height: 40
       num_layers: 30
       patch_size: 2
       in_channels: 16
@@ -57,7 +59,8 @@ model:
         lora_config:
             target: sat.model.finetune.lora2.LoraMixin
             params:
-                r: 128
+                # r: 128
+                r: 32
 
         patch_embed_config:
           target: dit_video_concat.ImagePatchEmbeddingMixin
@@ -167,9 +170,9 @@ model:
         data_align_method:
 
   sampler_config:
-    target: sgm.modules.diffusionmodules.sampling.VPSDEDPMPP2MSampler
+    target: sgm.modules.diffusionmodules.sampling.VPSDEDPMPP2MSamplerEdit
     params:
-      num_steps: 50
+      num_steps: 20
       verbose: True
 
       discretization_config:
@@ -182,4 +185,4 @@ model:
         params:
           scale: 6
           exp: 5
-          num_steps: 50
+          num_steps: 20

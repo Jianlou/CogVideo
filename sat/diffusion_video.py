@@ -146,6 +146,7 @@ class SATVideoDiffusionEngine(nn.Module):
         torch.cuda.empty_cache()
 
         loss, loss_dict = self(x, batch)
+        torch.cuda.empty_cache()
         return loss, loss_dict
 
     def get_input(self, batch):
