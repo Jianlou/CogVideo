@@ -13,3 +13,4 @@ models/
 datas/
 ckpt*/
 *.mp4
+save_*

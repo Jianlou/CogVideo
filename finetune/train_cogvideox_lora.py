@@ -258,6 +258,16 @@ def get_args():
         ),
     )
     parser.add_argument(
+        "--checkpointing_epochs",
+        type=int,
+        default=1,
+        help=(
+            "Save a checkpoint of the training state every X updates. These checkpoints can be used both as final"
+            " checkpoints in case they are better than the last checkpoint, and are also suitable for resuming"
+            " training using `--resume_from_checkpoint`."
+        ),
+    )
+    parser.add_argument(
         "--checkpoints_total_limit",
         type=int,
         default=None,
@@ -688,13 +698,18 @@ def log_validation(
         scheduler_args["variance_type"] = variance_type
 
     pipe.scheduler = CogVideoXDPMScheduler.from_config(pipe.scheduler.config, **scheduler_args)
-    pipe = pipe.to(accelerator.device)
+    # pipe = pipe.to(accelerator.device)
     # pipe.set_progress_bar_config(disable=True)
 
     # run inference
-    generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed else None
+    generator = torch.Generator(device=accelerator.device).manual_seed(42)
+    print(torch.randn((2,2),generator=generator,device="cuda"))
+    generator_cpu = torch.Generator().manual_seed(42)
+    print(torch.randn((2,2),generator=generator_cpu))
 
     videos = []
+    # print(pipeline_args)
+    # print(generator)
     for _ in range(args.num_validation_videos):
         video = pipe(**pipeline_args, generator=generator, output_type="np").frames[0]
         videos.append(video)
@@ -1083,6 +1098,7 @@ def main(args):
             for model in models:
                 if isinstance(model, type(unwrap_model(transformer))):
                     transformer_lora_layers_to_save = get_peft_model_state_dict(model)
+                    # transformer_lora_layers_to_save = None
                 else:
                     raise ValueError(f"unexpected save model: {model.__class__}")
 
@@ -1308,137 +1324,169 @@ def main(args):
     model_config = transformer.module.config if hasattr(transformer, "module") else transformer.config
 
     for epoch in range(first_epoch, args.num_train_epochs):
-        transformer.train()
+        if False:
+            transformer.train()
 
-        for step, batch in enumerate(train_dataloader):
-            models_to_accumulate = [transformer]
+            for step, batch in enumerate(train_dataloader):
+                models_to_accumulate = [transformer]
 
-            with accelerator.accumulate(models_to_accumulate):
-                model_input = batch["videos"].permute(0, 2, 1, 3, 4).to(dtype=weight_dtype)  # [B, F, C, H, W]
-                prompts = batch["prompts"]
+                with accelerator.accumulate(models_to_accumulate):
+                    model_input = batch["videos"].permute(0, 2, 1, 3, 4).to(dtype=weight_dtype)  # [B, F, C, H, W]
+                    prompts = batch["prompts"]
 
-                # encode prompts
-                prompt_embeds = compute_prompt_embeddings(
-                    tokenizer,
-                    text_encoder,
-                    prompts,
-                    model_config.max_text_seq_length,
-                    accelerator.device,
-                    weight_dtype,
-                    requires_grad=False,
-                )
-
-                # Sample noise that will be added to the latents
-                noise = torch.randn_like(model_input)
-                batch_size, num_frames, num_channels, height, width = model_input.shape
-
-                # Sample a random timestep for each image
-                timesteps = torch.randint(
-                    0, scheduler.config.num_train_timesteps, (batch_size,), device=model_input.device
-                )
-                timesteps = timesteps.long()
-
-                # Prepare rotary embeds
-                image_rotary_emb = (
-                    prepare_rotary_positional_embeddings(
-                        height=args.height,
-                        width=args.width,
-                        num_frames=num_frames,
-                        vae_scale_factor_spatial=vae_scale_factor_spatial,
-                        patch_size=model_config.patch_size,
-                        attention_head_dim=model_config.attention_head_dim,
-                        device=accelerator.device,
+                    # encode prompts
+                    prompt_embeds = compute_prompt_embeddings(
+                        tokenizer,
+                        text_encoder,
+                        prompts,
+                        model_config.max_text_seq_length,
+                        accelerator.device,
+                        weight_dtype,
+                        requires_grad=False,
                     )
-                    if model_config.use_rotary_positional_embeddings
-                    else None
-                )
 
-                # Add noise to the model input according to the noise magnitude at each timestep
-                # (this is the forward diffusion process)
-                noisy_model_input = scheduler.add_noise(model_input, noise, timesteps)
+                    # Sample noise that will be added to the latents
+                    noise = torch.randn_like(model_input)
+                    batch_size, num_frames, num_channels, height, width = model_input.shape
 
-                # Predict the noise residual
-                model_output = transformer(
-                    hidden_states=noisy_model_input,
-                    encoder_hidden_states=prompt_embeds,
-                    timestep=timesteps,
-                    image_rotary_emb=image_rotary_emb,
-                    return_dict=False,
-                )[0]
-                model_pred = scheduler.get_velocity(model_output, noisy_model_input, timesteps)
+                    # Sample a random timestep for each image
+                    timesteps = torch.randint(
+                        0, scheduler.config.num_train_timesteps, (batch_size,), device=model_input.device
+                    )
+                    timesteps = timesteps.long()
 
-                alphas_cumprod = scheduler.alphas_cumprod[timesteps]
-                weights = 1 / (1 - alphas_cumprod)
-                while len(weights.shape) < len(model_pred.shape):
-                    weights = weights.unsqueeze(-1)
+                    # Prepare rotary embeds
+                    image_rotary_emb = (
+                        prepare_rotary_positional_embeddings(
+                            height=args.height,
+                            width=args.width,
+                            num_frames=num_frames,
+                            vae_scale_factor_spatial=vae_scale_factor_spatial,
+                            patch_size=model_config.patch_size,
+                            attention_head_dim=model_config.attention_head_dim,
+                            device=accelerator.device,
+                        )
+                        if model_config.use_rotary_positional_embeddings
+                        else None
+                    )
 
-                target = model_input
+                    # Add noise to the model input according to the noise magnitude at each timestep
+                    # (this is the forward diffusion process)
+                    noisy_model_input = scheduler.add_noise(model_input, noise, timesteps)
 
-                loss = torch.mean((weights * (model_pred - target) ** 2).reshape(batch_size, -1), dim=1)
-                loss = loss.mean()
-                accelerator.backward(loss)
+                    # Predict the noise residual
+                    model_output = transformer(
+                        hidden_states=noisy_model_input,
+                        encoder_hidden_states=prompt_embeds,
+                        timestep=timesteps,
+                        image_rotary_emb=image_rotary_emb,
+                        return_dict=False,
+                    )[0]
+                    model_pred = scheduler.get_velocity(model_output, noisy_model_input, timesteps)
 
+                    alphas_cumprod = scheduler.alphas_cumprod[timesteps]
+                    weights = 1 / (1 - alphas_cumprod)
+                    while len(weights.shape) < len(model_pred.shape):
+                        weights = weights.unsqueeze(-1)
+
+                    target = model_input
+
+                    loss = torch.mean((weights * (model_pred - target) ** 2).reshape(batch_size, -1), dim=1)
+                    loss = loss.mean()
+                    accelerator.backward(loss)
+
+                    if accelerator.sync_gradients:
+                        params_to_clip = transformer.parameters()
+                        accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+
+                    if accelerator.state.deepspeed_plugin is None:
+                        optimizer.step()
+                        optimizer.zero_grad()
+
+                    lr_scheduler.step()
+
+                # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
-                    params_to_clip = transformer.parameters()
-                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                    progress_bar.update(1)
+                    global_step += 1
 
-                if accelerator.state.deepspeed_plugin is None:
-                    optimizer.step()
-                    optimizer.zero_grad()
+                logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+                progress_bar.set_postfix(**logs)
+                accelerator.log(logs, step=global_step)
 
-                lr_scheduler.step()
-
-            # Checks if the accelerator has performed an optimization step behind the scenes
-            if accelerator.sync_gradients:
-                progress_bar.update(1)
-                global_step += 1
-
-                if accelerator.is_main_process:
-                    if global_step % args.checkpointing_steps == 0:
-                        # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
-                        if args.checkpoints_total_limit is not None:
-                            checkpoints = os.listdir(args.output_dir)
-                            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
-                            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
-
-                            # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
-                            if len(checkpoints) >= args.checkpoints_total_limit:
-                                num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
-                                removing_checkpoints = checkpoints[0:num_to_remove]
-
-                                logger.info(
-                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
-                                )
-                                logger.info(f"Removing checkpoints: {', '.join(removing_checkpoints)}")
-
-                                for removing_checkpoint in removing_checkpoints:
-                                    removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
-                                    shutil.rmtree(removing_checkpoint)
-
-                        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
-                        logger.info(f"Saved state to {save_path}")
-
-            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
-            progress_bar.set_postfix(**logs)
-            accelerator.log(logs, step=global_step)
-
-            if global_step >= args.max_train_steps:
-                break
+                if global_step >= args.max_train_steps:
+                    break
 
         if accelerator.is_main_process:
-            if args.validation_prompt is not None and (epoch + 1) % args.validation_epochs == 0:
+            if epoch % args.checkpointing_epochs == 0:
+                # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
+                if args.checkpoints_total_limit is not None:
+                    checkpoints = os.listdir(args.output_dir)
+                    checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
+                    checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+
+                    # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
+                    if len(checkpoints) >= args.checkpoints_total_limit:
+                        num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
+                        removing_checkpoints = checkpoints[0:num_to_remove]
+
+                        logger.info(
+                            f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                        )
+                        logger.info(f"Removing checkpoints: {', '.join(removing_checkpoints)}")
+
+                        for removing_checkpoint in removing_checkpoints:
+                            removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
+                            shutil.rmtree(removing_checkpoint)
+
+                save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}-{epoch}")
+                accelerator.save_state(save_path)
+                logger.info(f"Saved state to {save_path}")
+        
+        if accelerator.is_main_process:
+            if args.validation_prompt is not None and (epoch) % args.validation_epochs == 0:
                 # Create pipeline
+                # pipe = CogVideoXPipeline.from_pretrained(
+                #     args.pretrained_model_name_or_path,
+                #     transformer=unwrap_model(transformer),
+                #     text_encoder=unwrap_model(text_encoder),
+                #     vae=unwrap_model(vae),
+                #     scheduler=scheduler,
+                #     revision=args.revision,
+                #     variant=args.variant,
+                #     torch_dtype=weight_dtype,
+                # )
                 pipe = CogVideoXPipeline.from_pretrained(
                     args.pretrained_model_name_or_path,
-                    transformer=unwrap_model(transformer),
-                    text_encoder=unwrap_model(text_encoder),
-                    vae=unwrap_model(vae),
-                    scheduler=scheduler,
-                    revision=args.revision,
-                    variant=args.variant,
-                    torch_dtype=weight_dtype,
+                    torch_dtype=weight_dtype
                 )
+                # pipe.to(accelerator.device)
+                # def compare_model_params(model1, model2):
+                #     for (name1, param1), (name2, param2) in zip(model1.named_parameters(), model2.named_parameters()):
+                #         # print(param1.device)
+                #         # print(param2.device)
+                #         # print(param1.dtype)
+                #         # print(param2.dtype)
+                #         # 检查参数名称是否相同
+                #         if name1 != name2:
+                #             print(f"Parameter names differ: {name1} vs {name2}")
+                #             return False
+                #         # 检查参数张量的形状和数值是否相同
+                #         if not torch.equal(param1, param2):
+                #             print(f"Parameter values differ for {name1}")
+                #             return False
+                #     print("Models have identical parameters.")
+                #     return True
+                # compare_model_params(pipe1.transformer, pipe.transformer)
+                # # compare_model_params(pipe1.text_encoder, pipe.text_encoder)
+                # # compare_model_params(pipe1.vae, pipe.vae)
+                # assert False
+                pipe.scheduler = CogVideoXDPMScheduler.from_config(pipe.scheduler.config, timestep_spacing="trailing")
+                pipe.enable_sequential_cpu_offload()
+                pipe.vae.enable_slicing()
+                pipe.vae.enable_tiling()
+                print("weight_dtype" + " ")
+                print(weight_dtype)
 
                 validation_prompts = args.validation_prompt.split(args.validation_prompt_separator)
                 for validation_prompt in validation_prompts:
@@ -1458,6 +1506,15 @@ def main(args):
                         epoch=epoch,
                     )
 
+                    #save
+                    vid_save_path = os.path.join(args.output_dir, \
+                                    "vis_"+str(epoch)+"_"+\
+                                    validation_prompt.strip()[:50].replace(" ", "_").ljust(50, '0'))
+                    if not os.path.exists(vid_save_path):
+                        os.makedirs(vid_save_path)
+                    for vid_i in range(len(validation_outputs)):
+                        export_to_video(validation_outputs[vid_i], os.path.join(vid_save_path,str(vid_i)+".mp4"), fps=8)
+
     # Save the lora layers
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
@@ -1471,6 +1528,7 @@ def main(args):
         )
         transformer = transformer.to(dtype)
         transformer_lora_layers = get_peft_model_state_dict(transformer)
+        # transformer_lora_layers = None
 
         CogVideoXPipeline.save_lora_weights(
             save_directory=args.output_dir,
@@ -1518,6 +1576,16 @@ def main(args):
                     is_final_validation=True,
                 )
                 validation_outputs.extend(video)
+
+                #save
+                vid_save_path = os.path.join(args.output_dir, "vis_final_"+\
+                                validation_prompt.strip()[:50].replace(" ", "_").ljust(50, '0'))
+                if not os.path.exists(vid_save_path):
+                    os.makedirs(vid_save_path)
+                for vid_i in range(len(video)):
+                    print(len(video))
+                    print(len(video[vid_i]))
+                    export_to_video(video[vid_i], os.path.join(vid_save_path,str(vid_i)+".mp4"), fps=8)
 
         if args.push_to_hub:
             save_model_card(

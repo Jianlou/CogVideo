@@ -79,6 +79,7 @@ def generate_video(
         pipe = CogVideoXVideoToVideoPipeline.from_pretrained(model_path, torch_dtype=dtype)
         video = load_video(image_or_video_path)
 
+    print("here 1")
     # If you're using with lora, add this code
     if lora_path:
         pipe.load_lora_weights(lora_path, weight_name="pytorch_lora_weights.safetensors", adapter_name="test_1")
@@ -91,17 +92,20 @@ def generate_video(
 
     # pipe.scheduler = CogVideoXDDIMScheduler.from_config(pipe.scheduler.config, timestep_spacing="trailing")
     pipe.scheduler = CogVideoXDPMScheduler.from_config(pipe.scheduler.config, timestep_spacing="trailing")
+    print(pipe.scheduler)
+    print("here 2")
 
     # 3. Enable CPU offload for the model.
     # turn off if you have multiple GPUs or enough GPU memory(such as H100) and it will cost less time in inference
     # and enable to("cuda")
 
-    # pipe.to("cuda")
+    pipe.to("cuda")
 
-    pipe.enable_sequential_cpu_offload()
+    # pipe.enable_sequential_cpu_offload()
 
     pipe.vae.enable_slicing()
     pipe.vae.enable_tiling()
+    print("here 3")
 
     # 4. Generate the video frames based on the prompt.
     # `num_frames` is the Number of frames to generate.
@@ -118,6 +122,8 @@ def generate_video(
             generator=torch.Generator().manual_seed(seed),  # Set the seed for reproducibility
         ).frames[0]
     elif generate_type == "t2v":
+        generator=torch.Generator().manual_seed(seed)
+        print(torch.randn((2,2),generator=generator))
         video_generate = pipe(
             prompt=prompt,
             num_videos_per_prompt=num_videos_per_prompt,
@@ -125,7 +131,7 @@ def generate_video(
             num_frames=49,
             use_dynamic_cfg=True,
             guidance_scale=guidance_scale,
-            generator=torch.Generator().manual_seed(seed),
+            generator=generator,
         ).frames[0]
     else:
         video_generate = pipe(
@@ -138,6 +144,7 @@ def generate_video(
             guidance_scale=guidance_scale,
             generator=torch.Generator().manual_seed(seed),  # Set the seed for reproducibility
         ).frames[0]
+    print("here 4")
     # 5. Export the generated frames to a video file. fps must be 8 for original video.
     export_to_video(video_generate, output_path, fps=8)
 
@@ -168,12 +175,13 @@ if __name__ == "__main__":
         "--generate_type", type=str, default="t2v", help="The type of video generation (e.g., 't2v', 'i2v', 'v2v')"
     )
     parser.add_argument(
-        "--dtype", type=str, default="bfloat16", help="The data type for computation (e.g., 'float16' or 'bfloat16')"
+        "--dtype", type=str, default="float16", help="The data type for computation (e.g., 'float16' or 'bfloat16')"
     )
     parser.add_argument("--seed", type=int, default=42, help="The seed for reproducibility")
 
     args = parser.parse_args()
     dtype = torch.float16 if args.dtype == "float16" else torch.bfloat16
+
     generate_video(
         prompt=args.prompt,
         model_path=args.model_path,
