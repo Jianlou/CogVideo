@@ -1,7 +1,7 @@
 #!/bin/bash
 EXP=${1:-cogvx-difft-rm}
 MODEL_PATH=${2:-models/CogVideoX-2b}
-DATASET_PATH=${3:-datas/Fashion}
+DATASET_PATH=${3:-datas/Girl}
 OUTPUT_PATH=${4:-reward-single-node}
 
 HOME_DIR=$(pwd)
@@ -30,7 +30,7 @@ srun --partition-id share-a \
     bash -c "cd \"${HOME_DIR}\"; \
     source /root/miniconda3/bin/activate cogvx_diff; \
     $environs accelerate launch --config_file finetune/accelerate_config_machine_single_zero3_1.yaml --multi_gpu\
-    finetune/train_cogvideox_lora_reward_cmb.py \
+    finetune/train_cogvideox_sft_reward_cmb.py \
     --gradient_checkpointing \
     --pretrained_model_name_or_path $MODEL_PATH \
     --cache_dir $CACHE_PATH \
@@ -57,7 +57,7 @@ srun --partition-id share-a \
     --skip_frames_end 0 \
     --train_batch_size 1 \
     --num_train_epochs 100 \
-    --checkpointing_epochs 5 \
+    --checkpointing_epochs 50 \
     --gradient_accumulation_steps 4 \
     --learning_rate 1e-3 \
     --lr_scheduler cosine_with_restarts \

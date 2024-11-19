@@ -1,7 +1,7 @@
 #!/bin/bash
 EXP=${1:-cogvx-difft-rm}
 MODEL_PATH=${2:-models/CogVideoX-2b}
-DATASET_PATH=${3:-datas/Dance}
+DATASET_PATH=${3:-datas/Girl}
 OUTPUT_PATH=${4:-reward-single-node}
 
 HOME_DIR=$(pwd)
@@ -39,14 +39,14 @@ srun --partition-id share-a \
     --instance_data_root $DATASET_PATH \
     --caption_column prompts.txt \
     --video_column videos.txt \
-    --validation_prompt \"Tom, the mischievous gray cat, is crouched in a barn, his eyes gleaming with cunning as he prepares to pounce on Jerry, the agile white mouse. The barn is filled with rustic charm, featuring wooden beams and a hay bale in the background. Tom's body language is tense, his muscles coiled like a spring, ready to leap at any moment. Jerry, on the other hand, is caught off guard, standing on his hind legs with a look of surprise on his face. The scene is filled with anticipation, as viewers wait to see if Tom will finally catch Jerry. The colors are vibrant, with the gray of Tom's fur contrasting against the white of Jerry's fur and the warm tones of the barn. The composition of the scene is dynamic, with Tom and Jerry positioned diagonally across from each other, creating a sense of movement and tension.:::A young woman with long dark hair adorned with a white bow stands against a beige backdrop. She wears an elegant off-the-shoulder dress with intricate lace and a high ruffled hem. Her posture is poised, inviting the viewer. The dress is crafted from layers of sheer tulle, creating a dreamy effect. Her serene pose and gentle expression add to the ethereal quality of the scene.
+    --validation_prompt \"In the video, a person is captured in a moment of quiet contemplation amidst a backdrop of bookshelves filled with a variety of books. The individual is elegantly dressed in a formal suit, complete with a crisp white shirt and a classic cap, adding an air of sophistication to the scene. The persons long hair cascades down their shoulders, complementing the overall aesthetic.The persons hand is gently holding a cigar, from which they are taking a leisurely puff. The smoke from the cigar adds a touch of drama to the scene, creating an atmosphere of relaxation and introspection. The persons gaze is directed off to the side, suggesting deep thought or perhaps a conversation happening out of frame.The bookshelves in the background are filled to capacity, indicating a love for literature or a scholarly pursuit. The variety of books, differing in size and thickness, hints at a diverse range of interests or a broad intellectual curiosity. The lighting in the room is soft and warm, enhancing the cozy and intellectual ambiance of the setting.Overall, the video paints a picture of a moment of calm and intellectual engagement, set in a personal library or study.:::Tom, the mischievous gray cat, is crouched in a barn, his eyes gleaming with cunning as he prepares to pounce on Jerry, the agile white mouse. The barn is filled with rustic charm, featuring wooden beams and a hay bale in the background. Tom's body language is tense, his muscles coiled like a spring, ready to leap at any moment. Jerry, on the other hand, is caught off guard, standing on his hind legs with a look of surprise on his face. The scene is filled with anticipation, as viewers wait to see if Tom will finally catch Jerry. The colors are vibrant, with the gray of Tom's fur contrasting against the white of Jerry's fur and the warm tones of the barn. The composition of the scene is dynamic, with Tom and Jerry positioned diagonally across from each other, creating a sense of movement and tension.:::A young woman with long dark hair adorned with a white bow stands against a beige backdrop. She wears an elegant off-the-shoulder dress with intricate lace and a high ruffled hem. Her posture is poised, inviting the viewer. The dress is crafted from layers of sheer tulle, creating a dreamy effect. Her serene pose and gentle expression add to the ethereal quality of the scene.
 :::a tortoise covered with algae:::young man using laptop in the tram\" \
     --validation_prompt_separator ::: \
     --num_validation_videos 1 \
     --validation_epochs 5 \
     --seed 42 \
     --rank 128 \
-    --lora_alpha 64 \
+    --lora_alpha 256 \
     --mixed_precision fp16 \
     --output_dir save_${OUTPUT_PATH}_${DATETIME} \
     --height 480 \

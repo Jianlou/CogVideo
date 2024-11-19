@@ -1305,7 +1305,7 @@ def main(args):
 
     # We only train the additional adapter LoRA layers
     text_encoder.requires_grad_(False)
-    transformer.requires_grad_(False)
+    transformer.requires_grad_(True)
     vae.requires_grad_(False)
 
     # For mixed precision training we cast all non-trainable weights (vae, text_encoder and transformer) to half-precision
@@ -1355,13 +1355,13 @@ def main(args):
                 reward_scorer.reward_model.set_grad_checkpointing()
 
     # now we will add new LoRA weights to the attention layers
-    transformer_lora_config = LoraConfig(
-        r=args.rank,
-        lora_alpha=args.lora_alpha,
-        init_lora_weights=True,
-        target_modules=["to_k", "to_q", "to_v", "to_out.0"],
-    )
-    transformer.add_adapter(transformer_lora_config)
+    # transformer_lora_config = LoraConfig(
+    #     r=args.rank,
+    #     lora_alpha=args.lora_alpha,
+    #     init_lora_weights=True,
+    #     target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+    # )
+    # transformer.add_adapter(transformer_lora_config)
 
     def unwrap_model(model):
         model = accelerator.unwrap_model(model)
@@ -1371,51 +1371,54 @@ def main(args):
     # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
     def save_model_hook(models, weights, output_dir):
         if accelerator.is_main_process:
-            transformer_lora_layers_to_save = None
+            # transformer_lora_layers_to_save = None
 
             for model in models:
                 if isinstance(model, type(unwrap_model(transformer))):
-                    transformer_lora_layers_to_save = get_peft_model_state_dict(model)
+                    model: CogVideoXTransformer3DModel
+                    model = unwrap_model(model)
+                    model.save_pretrained(
+                        os.path.join(output_dir, "transformer"), safe_serialization=True, max_shard_size="5GB"
+                    )
                 else:
                     print(f"unexpected save model: {model.__class__}")
                     # continue
                     # raise ValueError(f"unexpected save model: {model.__class__}")
 
                 # make sure to pop weight so that corresponding model is not saved again
-                weights.pop()
+                if weights:
+                    weights.pop()
 
-            CogVideoXPipeline.save_lora_weights(
-                output_dir,
-                transformer_lora_layers=transformer_lora_layers_to_save,
-            )
+            # CogVideoXPipeline.save_lora_weights(
+            #     output_dir,
+            #     transformer_lora_layers=transformer_lora_layers_to_save,
+            # )
 
     def load_model_hook(models, input_dir):
         transformer_ = None
+        init_under_meta = False
 
-        while len(models) > 0:
-            model = models.pop()
+        # This is a bit of a hack but I don't know any other solution.
+        if not accelerator.distributed_type == DistributedType.DEEPSPEED:
+            while len(models) > 0:
+                model = models.pop()
 
-            if isinstance(model, type(unwrap_model(transformer))):
-                transformer_ = model
-            else:
-                print(f"Unexpected save model: {model.__class__}")
-                # raise ValueError(f"Unexpected save model: {model.__class__}")
-
-        lora_state_dict = CogVideoXPipeline.lora_state_dict(input_dir)
-
-        transformer_state_dict = {
-            f'{k.replace("transformer.", "")}': v for k, v in lora_state_dict.items() if k.startswith("transformer.")
-        }
-        transformer_state_dict = convert_unet_state_dict_to_peft(transformer_state_dict)
-        incompatible_keys = set_peft_model_state_dict(transformer_, transformer_state_dict, adapter_name="default")
-        if incompatible_keys is not None:
-            # check only for unexpected keys
-            unexpected_keys = getattr(incompatible_keys, "unexpected_keys", None)
-            if unexpected_keys:
-                logger.warning(
-                    f"Loading adapter weights from state_dict led to unexpected keys not found in the model: "
-                    f" {unexpected_keys}. "
+                if isinstance(model, type(unwrap_model(transformer))):
+                    transformer_ = unwrap_model(model)
+                else:
+                    print(f"Unexpected save model: {model.__class__}")
+                    # raise ValueError(f"Unexpected save model: {model.__class__}")
+        else:
+            with init_empty_weights():
+                transformer_ = CogVideoXTransformer3DModel.from_config(
+                    args.pretrained_model_name_or_path, subfolder="transformer"
                 )
+                init_under_meta = True
+
+        load_model = CogVideoXTransformer3DModel.from_pretrained(os.path.join(input_dir, "transformer"))
+        transformer_.register_to_config(**load_model.config)
+        transformer_.load_state_dict(load_model.state_dict(), assign=init_under_meta)
+        del load_model
 
         # Make sure the trainable params are in float32. This is again needed since the base models
         # are in `weight_dtype`. More details:
@@ -1442,7 +1445,7 @@ def main(args):
         # only upcast trainable parameters (LoRA) into fp32
         cast_training_params([transformer], dtype=torch.float32)
 
-    transformer_lora_parameters = list(filter(lambda p: p.requires_grad, transformer.parameters()))
+    transformer_parameters = list(filter(lambda p: p.requires_grad, transformer.parameters()))
     # print("transformer_lora_parameters")
     # print(len(transformer_lora_parameters))
     # param_num = 0
@@ -1453,7 +1456,7 @@ def main(args):
     # print(param_num)
 
     # Optimization parameters
-    transformer_parameters_with_lr = {"params": transformer_lora_parameters, "lr": args.learning_rate}
+    transformer_parameters_with_lr = {"params": transformer_parameters, "lr": args.learning_rate}
     params_to_optimize = [transformer_parameters_with_lr]
 
     use_deepspeed_optimizer = (
@@ -1465,8 +1468,8 @@ def main(args):
         and "scheduler" in accelerator.state.deepspeed_plugin.deepspeed_config
     )
 
-    # print(accelerator.state.deepspeed_plugin)
-    # print(use_deepspeed_optimizer)
+    print(accelerator.state.deepspeed_plugin)
+    print(use_deepspeed_optimizer)
     # assert False
     optimizer = get_optimizer(args, params_to_optimize, use_deepspeed=use_deepspeed_optimizer)
 
@@ -1562,7 +1565,7 @@ def main(args):
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
-        tracker_name = args.tracker_name or "cogvideox-lora"
+        tracker_name = args.tracker_name or "cogvideox-sft"
         accelerator.init_trackers(tracker_name, config=vars(args))
 
     # Train!
@@ -1702,7 +1705,7 @@ def main(args):
                     loss = torch.mean((weights * (model_pred - target) ** 2).reshape(batch_size, -1), dim=1)
                     loss = loss.mean()
 
-                    print("lora loss " + str(loss))
+                    print("sft loss " + str(loss))
 
                     accelerator.backward(loss)
 
@@ -2052,12 +2055,25 @@ def main(args):
             else torch.float32
         )
         transformer = transformer.to(dtype)
-        transformer_lora_layers = get_peft_model_state_dict(transformer)
-
-        CogVideoXPipeline.save_lora_weights(
-            save_directory=args.output_dir,
-            transformer_lora_layers=transformer_lora_layers,
+        transformer.save_pretrained(
+            os.path.join(args.output_dir, "transformer"),
+            safe_serialization=True,
+            max_shard_size="5GB",
         )
+
+        # Cleanup trained models to save memory
+        if args.load_tensors:
+            del transformer
+        else:
+            del transformer, text_encoder, vae
+
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize(accelerator.device)
+
+        accelerator.print("===== Memory before testing =====")
+        # print_memory(accelerator.device)
+        # reset_memory(accelerator.device)
 
         # Final test inference
         pipe = CogVideoXPipeline.from_pretrained(
@@ -2074,9 +2090,9 @@ def main(args):
             pipe.vae.enable_tiling()
 
         # Load LoRA weights
-        lora_scaling = args.lora_alpha / args.rank
-        pipe.load_lora_weights(args.output_dir, adapter_name="cogvideox-lora")
-        pipe.set_adapters(["cogvideox-lora"], [lora_scaling])
+        # lora_scaling = args.lora_alpha / args.rank
+        # pipe.load_lora_weights(args.output_dir, adapter_name="cogvideox-lora")
+        # pipe.set_adapters(["cogvideox-lora"], [lora_scaling])
 
         # Run inference
         validation_outputs = []
